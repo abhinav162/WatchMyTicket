@@ -71,6 +71,14 @@ def test_format_filter():
     assert [s.format for s in filter_shows(watch, shows)] == ["ScreenX"]
 
 
+def test_format_filter_tolerates_bms_spacing_and_prefix():
+    # Regression: BMS labels this format '3D SCREEN X' (space + '3D ' prefix)
+    # while a watch stores the user's plain 'ScreenX' — these must match.
+    watch = make_watch(formats=["ScreenX"])
+    shows = [make_show(format="3D SCREEN X"), make_show(format="Dolby Cinema 2D")]
+    assert [s.format for s in filter_shows(watch, shows)] == ["3D SCREEN X"]
+
+
 def test_theatre_filter_is_substring_and_case_insensitive():
     watch = make_watch(theatres=["pvr vega"])
     shows = [make_show(theatre="PVR Vega Mall"), make_show(theatre="INOX City")]

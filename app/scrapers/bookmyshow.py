@@ -29,7 +29,7 @@ from app.config import settings
 from app.models import Watch
 from app.schemas import Show
 from app.scrapers.base import BaseScraper, ScraperBlockedError
-from app.utils.text import slugify
+from app.utils.text import compress, slugify
 
 BASE_URL = "https://in.bookmyshow.com"
 
@@ -56,12 +56,6 @@ REGION_CODES = {
 }
 
 
-def _compress(text: str) -> str:
-    """Reduce a title/slug to bare letters+digits: 'Spider-Man: Brand New Day'
-    and 'spiderman brand new day' both become 'spidermanbrandnewday'."""
-    return re.sub(r"[^a-z0-9]", "", text.lower())
-
-
 # Explore pages link movies as /movies/<slug>/ET... (no city segment); other
 # pages use /movies/<city>/<slug>/ET... — accept both.
 MOVIE_LINK_RE = re.compile(r"/movies/(?:[a-z0-9-]+/)?([a-z0-9-]+)/(ET\d+)")
@@ -78,7 +72,7 @@ def match_events(html: str, movie: str, threshold: float = 0.75) -> list[tuple[s
     # URLs can appear both as plain hrefs and inside embedded JSON with escaped slashes.
     html = html.replace("\\/", "/")
     candidates = set(MOVIE_LINK_RE.findall(html))
-    target = _compress(movie)
+    target = compress(movie)
     if not candidates:
         logger.warning(
             "BMS: explore page contained no /movies/.../ET... links at all "
@@ -90,7 +84,7 @@ def match_events(html: str, movie: str, threshold: float = 0.75) -> list[tuple[s
 
     scored: dict[str, tuple[float, str]] = {}  # event_code -> (score, slug)
     for slug, code in candidates:
-        compressed = _compress(slug)
+        compressed = compress(slug)
         score = difflib.SequenceMatcher(None, target, compressed).ratio()
         if target in compressed or compressed in target:
             score = max(score, 0.95)

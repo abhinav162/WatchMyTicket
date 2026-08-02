@@ -21,6 +21,14 @@ def test_parse_user_date_iso():
     assert parse_user_date("2026-08-16", today=date(2026, 8, 1)) == date(2026, 8, 16)
 
 
+def test_parse_user_date_iso_with_ambiguous_day_and_month():
+    # Regression: both components <=12 used to trigger dateutil's dayfirst
+    # heuristic even on an unambiguous ISO string, silently swapping
+    # month/day (2026-08-04 -> April 8 instead of August 4).
+    assert parse_user_date("2026-08-04", today=date(2026, 8, 1)) == date(2026, 8, 4)
+    assert parse_user_date("2026-01-12", today=date(2026, 1, 1)) == date(2026, 1, 12)
+
+
 def test_parse_user_date_day_month():
     assert parse_user_date("16 Aug", today=date(2026, 8, 1)) == date(2026, 8, 16)
 

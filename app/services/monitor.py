@@ -17,14 +17,19 @@ from app.scrapers.base import BaseScraper, ScraperBlockedError
 from app.services.comparator import diff
 from app.services.notifier import Notifier
 from app.utils.hashing import show_hash
+from app.utils.text import compress
 
 
 def _matches_any(value: str, wanted: list[str]) -> bool:
-    """Case-insensitive containment match; an empty filter matches everything."""
+    """Punctuation/spacing-tolerant containment match; an empty filter matches
+    everything. BMS's own labels rarely match a user's filter verbatim — e.g.
+    the watch filter 'ScreenX' must match BMS's actual label '3D SCREEN X' —
+    so both sides are compressed to bare letters+digits before comparing.
+    """
     if not wanted:
         return True
-    value_lower = value.lower()
-    return any(w.lower() in value_lower for w in wanted)
+    value_compressed = compress(value)
+    return any(compress(w) in value_compressed for w in wanted)
 
 
 def filter_shows(watch: Watch, shows: list[Show]) -> list[Show]:
