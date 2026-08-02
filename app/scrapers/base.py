@@ -6,6 +6,14 @@ from app.models import Watch
 from app.schemas import Show
 
 
+class ScraperBlockedError(Exception):
+    """The provider rejected our request (bot protection / rate limiting).
+
+    Expected occasionally in the wild — the monitor logs a concise warning
+    and retries on the next tick instead of dumping a traceback.
+    """
+
+
 class BaseScraper(ABC):
     """Turns a Watch into the list of shows currently bookable on a provider."""
 

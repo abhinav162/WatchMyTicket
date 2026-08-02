@@ -5,7 +5,7 @@ import pytest
 from app.models import Watch, WatchStatus
 from app.repositories import watch_repo
 from app.schemas import Show
-from app.scrapers.base import BaseScraper
+from app.scrapers.base import BaseScraper, ScraperBlockedError
 from app.services.monitor import MonitorService, filter_shows
 
 
@@ -132,6 +132,20 @@ async def test_paused_watch_is_skipped(session_factory, seeded_watch):
     notifier = SpyNotifier()
     monitor = MonitorService(FakeScraper([make_show()]), notifier, session_factory=session_factory)
     await monitor.run_once()
+    assert notifier.sent == []
+
+
+@pytest.mark.asyncio
+async def test_blocked_scraper_does_not_crash_the_run(session_factory, seeded_watch):
+    class BlockedScraper(BaseScraper):
+        name = "blocked"
+
+        async def scrape(self, watch):
+            raise ScraperBlockedError("403")
+
+    notifier = SpyNotifier()
+    monitor = MonitorService(BlockedScraper(), notifier, session_factory=session_factory)
+    await monitor.run_once()  # must not raise
     assert notifier.sent == []
 
 

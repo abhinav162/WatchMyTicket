@@ -16,7 +16,7 @@ from app.services.monitor import MonitorService
 from app.services.notifier import LogNotifier, TelegramNotifier
 
 logger.remove()
-logger.add(sys.stderr, level=settings.log_level.upper())
+logger.add(sys.stderr, level=settings.log_level.upper(), backtrace=False, diagnose=False)
 
 
 @asynccontextmanager

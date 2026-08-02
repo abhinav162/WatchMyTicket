@@ -1,29 +1,33 @@
 """Best-effort BookMyShow scraper.
 
+BookMyShow sits behind bot protection that fingerprints the TLS handshake,
+so a vanilla HTTP client gets 403 regardless of headers. We use curl_cffi
+with Chrome impersonation, which presents a real browser TLS/JA3 fingerprint.
+
 Strategy:
-1. Resolve the BMS region code for the watch's city (static map of major cities,
-   falling back to the city slug uppercased).
+1. Resolve the BMS region code for the watch's city (static map of major
+   cities, falling back to the city slug uppercased).
 2. Find the movie's event code (ET########) by scanning the city's "explore
    movies" page for a link whose slug matches the movie name.
 3. Fetch showtimes from the public showtimes-by-event API and parse venues,
    formats, languages and times.
 
-BookMyShow has no official API and actively changes its markup and applies
-bot protection, so every step is defensive: any failure raises and the
-monitor logs it and retries on the next tick. Polling stays conservative
-(one request cycle per watch per minute).
+BMS has no official API and changes its markup regularly, so every step is
+defensive: a 403 raises ScraperBlockedError (logged as a one-line warning),
+anything else raises and the monitor retries on the next tick. Polling stays
+conservative (one request cycle per watch per minute).
 """
 
 import re
 from datetime import date
 
-import httpx
+from curl_cffi.requests import AsyncSession
 from loguru import logger
 
 from app.config import settings
 from app.models import Watch
 from app.schemas import Show
-from app.scrapers.base import BaseScraper
+from app.scrapers.base import BaseScraper, ScraperBlockedError
 from app.utils.text import slugify
 
 BASE_URL = "https://in.bookmyshow.com"
@@ -54,27 +58,28 @@ REGION_CODES = {
 class BookMyShowScraper(BaseScraper):
     name = "bookmyshow"
 
-    def _headers(self) -> dict:
-        return {
-            "User-Agent": settings.user_agent,
-            "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-IN,en;q=0.9",
-        }
-
     def _region_code(self, city: str) -> str:
         slug = slugify(city)
         return REGION_CODES.get(slug.replace("-", " "), slug.replace("-", "").upper())
+
+    @staticmethod
+    def _checked(response, url: str):
+        if response.status_code == 403:
+            raise ScraperBlockedError(f"BookMyShow bot protection returned 403 for {url}")
+        if response.status_code >= 400:
+            raise ScraperBlockedError(f"BookMyShow returned HTTP {response.status_code} for {url}")
+        return response
 
     async def scrape(self, watch: Watch) -> list[Show]:
         city_slug = slugify(watch.city)
         region = self._region_code(watch.city)
 
-        async with httpx.AsyncClient(
-            headers=self._headers(),
+        async with AsyncSession(
+            impersonate=settings.bms_impersonate,
             timeout=settings.http_timeout_seconds,
-            follow_redirects=True,
-        ) as client:
-            event_code = await self._find_event_code(client, watch.movie, city_slug)
+            headers={"Accept-Language": "en-IN,en-US;q=0.9,en;q=0.8"},
+        ) as session:
+            event_code = await self._find_event_code(session, watch.movie, city_slug)
             if not event_code:
                 logger.info(
                     "BMS: no event found for movie={!r} city={!r} (not listed yet?)",
@@ -82,7 +87,7 @@ class BookMyShowScraper(BaseScraper):
                     watch.city,
                 )
                 return []
-            payload = await self._fetch_showtimes(client, event_code, region, watch.date)
+            payload = await self._fetch_showtimes(session, event_code, region, watch.date)
 
         movie_slug = slugify(watch.movie)
         booking_url = (
@@ -91,11 +96,10 @@ class BookMyShowScraper(BaseScraper):
         )
         return self._parse_showtimes(payload, watch, booking_url)
 
-    async def _find_event_code(self, client: httpx.AsyncClient, movie: str, city_slug: str) -> str | None:
+    async def _find_event_code(self, session: AsyncSession, movie: str, city_slug: str) -> str | None:
         """Scan the city's explore-movies page for a /movies/.../ET... link matching the title."""
         url = f"{BASE_URL}/explore/movies-{city_slug}"
-        response = await client.get(url)
-        response.raise_for_status()
+        response = self._checked(await session.get(url), url)
         html = response.text
 
         movie_slug = slugify(movie)
@@ -121,7 +125,7 @@ class BookMyShowScraper(BaseScraper):
         return match.group(1) if match else None
 
     async def _fetch_showtimes(
-        self, client: httpx.AsyncClient, event_code: str, region: str, show_date: date
+        self, session: AsyncSession, event_code: str, region: str, show_date: date
     ) -> dict:
         url = f"{BASE_URL}/api/movies-data/showtimes-by-event"
         params = {
@@ -135,9 +139,13 @@ class BookMyShowScraper(BaseScraper):
             "token": "",
             "dateCode": show_date.strftime("%Y%m%d"),
         }
-        response = await client.get(url, params=params)
-        response.raise_for_status()
-        return response.json()
+        response = self._checked(await session.get(url, params=params), url)
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise ScraperBlockedError(
+                "BookMyShow showtimes endpoint returned non-JSON (challenge page?)"
+            ) from exc
 
     def _parse_showtimes(self, payload: dict, watch: Watch, booking_url: str) -> list[Show]:
         shows: list[Show] = []

@@ -111,11 +111,16 @@ prevention, paused-watch handling, and date/text parsing.
 
 ## Notes on scraping
 
-BookMyShow has no official API. The scraper is best-effort: it resolves the
-movie's event code from the city's explore page, then reads the public
-showtimes endpoint. BMS applies bot protection and changes markup regularly, so
-failures are logged and retried on the next tick rather than crashing the
-service. Polling is conservative (one cycle per watch per minute) — please
+BookMyShow has no official API, and its bot protection fingerprints the TLS
+handshake — a vanilla HTTP client gets 403 no matter what headers it sends.
+The scraper therefore uses [curl_cffi](https://github.com/lexiforest/curl_cffi)
+with Chrome impersonation. It resolves the movie's event code from the city's
+explore page, then reads the public showtimes endpoint. BMS changes markup
+regularly and may still block datacenter IPs, so failures are logged as
+one-line warnings and retried on the next tick rather than crashing the
+service. If you keep getting `bot protection returned 403`, try a different
+impersonation profile via `BMS_IMPERSONATE` (e.g. `chrome124`, `safari`) or run
+from a residential network. Polling is conservative (one cycle per watch per minute) — please
 respect the platform's terms of service. New providers implement
 `app/scrapers/base.py:BaseScraper` and plug in via the `SCRAPER` setting.
 

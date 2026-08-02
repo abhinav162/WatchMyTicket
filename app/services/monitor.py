@@ -10,7 +10,7 @@ from app import database
 from app.models import Watch
 from app.repositories import notification_repo, watch_repo
 from app.schemas import Show
-from app.scrapers.base import BaseScraper
+from app.scrapers.base import BaseScraper, ScraperBlockedError
 from app.services.comparator import diff
 from app.services.notifier import Notifier
 from app.utils.hashing import show_hash
@@ -53,6 +53,10 @@ class MonitorService:
         for watch in watches:
             try:
                 await self.check_watch(watch)
+            except ScraperBlockedError as exc:
+                logger.warning(
+                    "watch={} ({!r}): {} — retrying next tick", watch.id, watch.movie, exc
+                )
             except Exception:
                 logger.exception("Check failed for watch={} ({!r})", watch.id, watch.movie)
 

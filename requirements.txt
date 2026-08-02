@@ -8,6 +8,6 @@ asyncpg>=0.29
 pydantic>=2.7
 pydantic-settings>=2.3
 httpx>=0.27
-selectolax>=0.3
+curl_cffi>=0.7
 loguru>=0.7
 python-dateutil>=2.9
