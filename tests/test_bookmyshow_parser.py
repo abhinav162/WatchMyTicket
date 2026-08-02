@@ -1,5 +1,8 @@
 from datetime import date
 
+import pytest
+
+from app.config import settings
 from app.models import Watch
 from app.scrapers.bookmyshow import BookMyShowScraper, match_events
 
@@ -169,3 +172,108 @@ def test_region_code_mapping():
     assert scraper._region_code("bangalore") == "BANG"
     assert scraper._region_code("New Delhi") == "NCR"
     assert scraper._region_code("Indore") == "INDORE"  # fallback
+
+
+# Regression: a movie's own explore-page slug only surfaces the base and 3D
+# event codes. Premium formats (ScreenX/Dolby/4DX/IMAX) and language dubs are
+# listed as ChildEvents of that anchor but each has independent showtimes not
+# embedded in the anchor's response — confirmed live by comparing BMS's own
+# buytickets deep link for a ScreenX showing against the anchor event's
+# response, which reported zero shows for that same EventCode.
+ANCHOR_PAYLOAD = {
+    "ShowDetails": [
+        {
+            "Date": "20260804",
+            "Event": {
+                "EventTitle": "Spider-Man: Brand New Day",
+                "ChildEvents": [
+                    {
+                        "EventTitle": "Spider-Man: Brand New Day",
+                        "EventCode": "ET_BASE",
+                        "EventLang": "English",
+                    },
+                    {
+                        "EventTitle": "Spider-Man: Brand New Day (3D SCREEN X)",
+                        "EventCode": "ET_SCREENX",
+                        "EventLang": "English",
+                    },
+                ],
+            },
+            "Venues": [
+                {
+                    "VenueName": "INOX Megaplex",
+                    "ShowTimes": [{"ShowTime": "7:00 PM", "EventCode": "ET_BASE"}],
+                }
+            ],
+        }
+    ]
+}
+
+SCREENX_PAYLOAD = {
+    "ShowDetails": [
+        {
+            "Date": "20260804",
+            "Event": {
+                "ChildEvents": [
+                    {
+                        "EventTitle": "Spider-Man: Brand New Day (3D SCREEN X)",
+                        "EventCode": "ET_SCREENX",
+                        "EventLang": "English",
+                    }
+                ],
+            },
+            "Venues": [
+                {
+                    "VenueName": "INOX Megaplex",
+                    "ShowTimes": [{"ShowTime": "10:00 PM", "EventCode": "ET_SCREENX"}],
+                }
+            ],
+        }
+    ]
+}
+
+
+@pytest.mark.asyncio
+async def test_scrape_fetches_sibling_events_independently(monkeypatch):
+    scraper = BookMyShowScraper()
+    fetched_codes = []
+
+    async def fake_find_events(session, movie, city_slug):
+        return [("spiderman-brand-new-day", "ET_BASE")]
+
+    async def fake_fetch_showtimes(session, event_code, region, show_date):
+        fetched_codes.append(event_code)
+        return {"ET_BASE": ANCHOR_PAYLOAD, "ET_SCREENX": SCREENX_PAYLOAD}[event_code]
+
+    monkeypatch.setattr(scraper, "_find_events", fake_find_events)
+    monkeypatch.setattr(scraper, "_fetch_showtimes", fake_fetch_showtimes)
+
+    shows = await scraper.scrape(make_watch())
+
+    assert fetched_codes == ["ET_BASE", "ET_SCREENX"]
+    by_time = {s.time: s for s in shows}
+    assert by_time["7:00 PM"].format == "2D"  # base event has no format suffix
+    assert by_time["10:00 PM"].format == "3D SCREEN X"
+    assert all(s.theatre == "INOX Megaplex" for s in shows)
+    assert all("ET_BASE" in s.booking_url or "ET_SCREENX" in s.booking_url for s in shows)
+
+
+@pytest.mark.asyncio
+async def test_scrape_caps_sibling_events(monkeypatch):
+    scraper = BookMyShowScraper()
+    monkeypatch.setattr(settings, "bms_max_events_per_watch", 1)
+    fetched_codes = []
+
+    async def fake_find_events(session, movie, city_slug):
+        return [("spiderman-brand-new-day", "ET_BASE")]
+
+    async def fake_fetch_showtimes(session, event_code, region, show_date):
+        fetched_codes.append(event_code)
+        return ANCHOR_PAYLOAD
+
+    monkeypatch.setattr(scraper, "_find_events", fake_find_events)
+    monkeypatch.setattr(scraper, "_fetch_showtimes", fake_fetch_showtimes)
+
+    await scraper.scrape(make_watch())
+
+    assert fetched_codes == ["ET_BASE"]  # sibling ET_SCREENX skipped due to the cap

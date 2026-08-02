@@ -9,8 +9,15 @@ Strategy:
    cities, falling back to the city slug uppercased).
 2. Find the movie's event code (ET########) by scanning the city's "explore
    movies" page for a link whose slug matches the movie name.
-3. Fetch showtimes from the public showtimes-by-event API and parse venues,
-   formats, languages and times.
+3. Fetch showtimes for that anchor event, then discover every sibling event
+   code (2D/3D, language dubs, premium formats like ScreenX/Dolby/4DX/IMAX)
+   listed in its ChildEvents metadata and fetch each of those independently.
+   BMS does NOT embed a sibling's showtimes in the anchor's response even
+   though it lists the sibling as a child — each format/language variant is
+   its own separately-queryable event, confirmed by comparing a movie's
+   buytickets page (which deep-links straight to e.g. an EventCode for its
+   ScreenX showing) against the anchor event's response, which reports zero
+   shows for that same EventCode.
 
 BMS has no official API and changes its markup regularly, so every step is
 defensive: a 403 raises ScraperBlockedError (logged as a one-line warning),
@@ -129,6 +136,12 @@ class BookMyShowScraper(BaseScraper):
         city_slug = slugify(watch.city)
         region = self._region_code(watch.city)
 
+        def booking_url(anchor_slug: str, event_code: str) -> str:
+            return (
+                f"{BASE_URL}/movies/{city_slug}/{anchor_slug}/buytickets/"
+                f"{event_code}/{watch.date.strftime('%Y%m%d')}"
+            )
+
         async with AsyncSession(
             impersonate=settings.bms_impersonate,
             timeout=settings.http_timeout_seconds,
@@ -143,15 +156,34 @@ class BookMyShowScraper(BaseScraper):
                 )
                 return []
 
-            shows: list[Show] = []
-            # A movie can be listed as several events (2D / 3D / re-release).
-            for movie_slug, event_code in events[:5]:
-                payload = await self._fetch_showtimes(session, event_code, region, watch.date)
-                booking_url = (
-                    f"{BASE_URL}/movies/{city_slug}/{movie_slug}/buytickets/"
-                    f"{event_code}/{watch.date.strftime('%Y%m%d')}"
+            anchor_slug, anchor_code = events[0]
+            anchor_payload = await self._fetch_showtimes(session, anchor_code, region, watch.date)
+            shows = self._parse_showtimes(anchor_payload, watch, booking_url(anchor_slug, anchor_code))
+
+            # Format/language variants (ScreenX, Dolby, 4DX, IMAX, dubs, ...) are
+            # listed as ChildEvents of the anchor but have their own independent
+            # showtimes, not embedded in the anchor's response — fetch each one.
+            sibling_codes = [
+                code for code in self._collect_child_codes(anchor_payload) if code != anchor_code
+            ]
+            max_extra = max(settings.bms_max_events_per_watch - 1, 0)
+            if len(sibling_codes) > max_extra:
+                logger.info(
+                    "BMS: {!r} has {} format/language variants; checking the first {} "
+                    "(raise BMS_MAX_EVENTS_PER_WATCH to check more)",
+                    watch.movie,
+                    len(sibling_codes) + 1,
+                    max_extra + 1,
                 )
-                shows.extend(self._parse_showtimes(payload, watch, booking_url))
+                sibling_codes = sibling_codes[:max_extra]
+
+            for code in sibling_codes:
+                try:
+                    payload = await self._fetch_showtimes(session, code, region, watch.date)
+                except ScraperBlockedError as exc:
+                    logger.debug("BMS: variant {} fetch failed, skipping: {}", code, exc)
+                    continue
+                shows.extend(self._parse_showtimes(payload, watch, booking_url(anchor_slug, code)))
         return shows
 
     async def _find_events(
@@ -197,6 +229,27 @@ class BookMyShowScraper(BaseScraper):
         language = child.get("EventLanguage") or child.get("EventLang") or ""
         return fmt, language
 
+    @classmethod
+    def _collect_child_codes(cls, payload: dict) -> dict[str, tuple[str | None, str]]:
+        """Every EventCode -> (format, language) reachable via a ChildEvents
+        list anywhere in the payload (the anchor event includes itself)."""
+        code_meta: dict[str, tuple[str | None, str]] = {}
+
+        def walk(node) -> None:
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if key == "ChildEvents" and isinstance(value, list):
+                        for child in value:
+                            if isinstance(child, dict) and child.get("EventCode"):
+                                code_meta[child["EventCode"]] = cls._child_meta(child)
+                    walk(value)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item)
+
+        walk(payload)
+        return code_meta
+
     def _parse_showtimes(self, payload: dict, watch: Watch, booking_url: str) -> list[Show]:
         """Walk the showtimes payload without assuming a fixed nesting.
 
@@ -206,23 +259,7 @@ class BookMyShowScraper(BaseScraper):
         every dict with a VenueName + ShowTimes and resolve format/language
         from the showtime's EventCode or the enclosing ChildEvents entry.
         """
-        # EventCode -> (format, language) from every ChildEvents entry anywhere.
-        code_meta: dict[str, tuple[str | None, str]] = {}
-
-        def collect_children(node) -> None:
-            if isinstance(node, dict):
-                for key, value in node.items():
-                    if key == "ChildEvents" and isinstance(value, list):
-                        for child in value:
-                            if isinstance(child, dict) and child.get("EventCode"):
-                                code_meta[child["EventCode"]] = self._child_meta(child)
-                    collect_children(value)
-            elif isinstance(node, list):
-                for item in node:
-                    collect_children(item)
-
-        collect_children(payload)
-
+        code_meta = self._collect_child_codes(payload)
         shows: list[Show] = []
 
         def walk(node, ctx: tuple[str | None, str]) -> None:

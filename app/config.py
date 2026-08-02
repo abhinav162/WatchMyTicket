@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     http_timeout_seconds: float = 15.0
     # curl_cffi browser impersonation profile ("chrome", "chrome124", "safari", ...)
     bms_impersonate: str = "chrome"
+    # A movie's format/language variants (ScreenX, Dolby, 4DX, IMAX, dubs, ...)
+    # are each a separately-queryable event; cap how many a single watch check
+    # will fetch per tick (anchor event included) to bound worst-case latency.
+    bms_max_events_per_watch: int = 20
 
     log_level: str = "INFO"
 
