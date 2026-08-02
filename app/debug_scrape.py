@@ -8,7 +8,6 @@ links, the raw HTML is saved to debug_bms.html so it can be inspected/shared.
 """
 
 import asyncio
-import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -17,7 +16,7 @@ from curl_cffi.requests import AsyncSession
 
 from app.config import settings
 from app.models import Watch
-from app.scrapers.bookmyshow import BASE_URL, BookMyShowScraper, match_event
+from app.scrapers.bookmyshow import BASE_URL, MOVIE_LINK_RE, BookMyShowScraper, match_events
 from app.utils.text import parse_user_date, slugify
 
 
@@ -41,7 +40,7 @@ async def main() -> None:
         response = await session.get(url)
         print(f"\nGET {url}\n -> HTTP {response.status_code}, {len(response.text)} bytes")
         html = response.text.replace("\\/", "/")
-        candidates = sorted(set(re.findall(r"/movies/[a-z0-9-]+/([a-z0-9-]+)/(ET\d+)", html)))
+        candidates = sorted(set(MOVIE_LINK_RE.findall(html)))
         print(f"\n{len(candidates)} movie link(s) found on the explore page:")
         for slug, code in candidates:
             print(f"   {slug}  {code}")
@@ -52,7 +51,7 @@ async def main() -> None:
             print("The page is likely JS-rendered or a challenge page.")
             return
 
-        matched = match_event(response.text, movie)
+        matched = match_events(response.text, movie)
         print(f"\nfuzzy match for {movie!r}: {matched}")
         if not matched:
             return

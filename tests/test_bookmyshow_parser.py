@@ -1,7 +1,7 @@
 from datetime import date
 
 from app.models import Watch
-from app.scrapers.bookmyshow import BookMyShowScraper, match_event
+from app.scrapers.bookmyshow import BookMyShowScraper, match_events
 
 SAMPLE_PAYLOAD = {
     "ShowDetails": [
@@ -72,39 +72,42 @@ def test_parse_empty_payload():
     assert scraper._parse_showtimes({"ShowDetails": None}, make_watch(), "url") == []
 
 
+# Explore pages link movies WITHOUT a city segment (real format observed live);
+# other pages include the city. Both must be recognised.
 EXPLORE_HTML = """
-<a href="/movies/bengaluru/spider-man-brand-new-day/ET00329567">Spider-Man</a>
-<a href="/movies/bengaluru/avatar-fire-and-ash/ET00412229">Avatar</a>
+<a href="/movies/spiderman-brand-new-day/ET00447840">Spider-Man</a>
+<a href="/movies/spiderman-brand-new-day-3d/ET00502600">Spider-Man 3D</a>
+<a href="/movies/avatar-fire-and-ash/ET00412229">Avatar</a>
 <a href="/movies/bengaluru/mission-impossible-8/ET00371405">MI8</a>
 """
 
 
-def test_match_event_survives_missing_hyphens_and_punctuation():
-    assert match_event(EXPLORE_HTML, "spiderman brand new day") == (
-        "spider-man-brand-new-day",
-        "ET00329567",
-    )
-    assert match_event(EXPLORE_HTML, "Spider-Man: Brand New Day") == (
-        "spider-man-brand-new-day",
-        "ET00329567",
-    )
+def test_match_events_survives_hyphens_and_punctuation():
+    for title in ("spiderman brand new day", "Spider-Man: Brand New Day"):
+        matches = match_events(EXPLORE_HTML, title)
+        assert matches[0] == ("spiderman-brand-new-day", "ET00447840")
+        # the separate 3D listing is also picked up
+        assert ("spiderman-brand-new-day-3d", "ET00502600") in matches
 
 
-def test_match_event_partial_title():
-    # a distinctive prefix of the title should still match via containment
-    assert match_event(EXPLORE_HTML, "avatar fire and ash") == (
-        "avatar-fire-and-ash",
-        "ET00412229",
-    )
+def test_match_events_city_prefixed_urls():
+    assert match_events(EXPLORE_HTML, "mission impossible 8") == [
+        ("mission-impossible-8", "ET00371405")
+    ]
 
 
-def test_match_event_rejects_unrelated_titles():
-    assert match_event(EXPLORE_HTML, "Oppenheimer") is None
+def test_match_events_escaped_json_urls():
+    html = '{"url":"\\/movies\\/avatar-fire-and-ash\\/ET00412229"}'
+    assert match_events(html, "avatar fire and ash") == [("avatar-fire-and-ash", "ET00412229")]
 
 
-def test_match_event_empty_inputs():
-    assert match_event("", "spiderman") is None
-    assert match_event(EXPLORE_HTML, "") is None
+def test_match_events_rejects_unrelated_titles():
+    assert match_events(EXPLORE_HTML, "Oppenheimer") == []
+
+
+def test_match_events_empty_inputs():
+    assert match_events("", "spiderman") == []
+    assert match_events(EXPLORE_HTML, "") == []
 
 
 def test_region_code_mapping():

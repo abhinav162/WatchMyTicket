@@ -62,47 +62,58 @@ def _compress(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
-def match_event(html: str, movie: str, threshold: float = 0.75) -> tuple[str, str] | None:
-    """Find the (slug, event_code) on an explore page best matching the movie name.
+# Explore pages link movies as /movies/<slug>/ET... (no city segment); other
+# pages use /movies/<city>/<slug>/ET... — accept both.
+MOVIE_LINK_RE = re.compile(r"/movies/(?:[a-z0-9-]+/)?([a-z0-9-]+)/(ET\d+)")
+
+
+def match_events(html: str, movie: str, threshold: float = 0.75) -> list[tuple[str, str]]:
+    """Find every (slug, event_code) on an explore page matching the movie name.
 
     Matching is fuzzy on the compressed strings so user input survives
     punctuation, hyphenation and spacing differences from the BMS slug.
+    A movie can have several events (e.g. separate 2D and 3D listings), so
+    all candidates above the threshold are returned, best match first.
     """
     # URLs can appear both as plain hrefs and inside embedded JSON with escaped slashes.
     html = html.replace("\\/", "/")
-    candidates = set(re.findall(r"/movies/[a-z0-9-]+/([a-z0-9-]+)/(ET\d+)", html))
+    candidates = set(MOVIE_LINK_RE.findall(html))
     target = _compress(movie)
     if not candidates:
         logger.warning(
-            "BMS: explore page contained no /movies/<slug>/ET... links at all "
+            "BMS: explore page contained no /movies/.../ET... links at all "
             "(JS-rendered or challenge page?) — run `python -m app.debug_scrape` to inspect"
         )
-        return None
+        return []
     if not target:
-        return None
+        return []
 
-    best: tuple[str, str] | None = None
-    best_score = 0.0
+    scored: dict[str, tuple[float, str]] = {}  # event_code -> (score, slug)
     for slug, code in candidates:
         compressed = _compress(slug)
         score = difflib.SequenceMatcher(None, target, compressed).ratio()
         if target in compressed or compressed in target:
             score = max(score, 0.95)
-        if score > best_score:
-            best_score, best = score, (slug, code)
+        if code not in scored or score > scored[code][0]:
+            scored[code] = (score, slug)
 
-    if best and best_score >= threshold:
-        logger.debug("BMS: matched {!r} -> slug={} score={:.2f}", movie, best[0], best_score)
-        return best
-    if best:
-        logger.info(
-            "BMS: best candidate for {!r} was slug={} (score {:.2f} < {:.2f}) — no match",
-            movie,
-            best[0],
-            best_score,
-            threshold,
-        )
-    return None
+    matches = sorted(
+        ((score, slug, code) for code, (score, slug) in scored.items() if score >= threshold),
+        reverse=True,
+    )
+    if matches:
+        logger.debug("BMS: {!r} matched {} event(s): {}", movie, len(matches), matches)
+        return [(slug, code) for _, slug, code in matches]
+
+    best_code, (best_score, best_slug) = max(scored.items(), key=lambda kv: kv[1][0])
+    logger.info(
+        "BMS: best candidate for {!r} was slug={} (score {:.2f} < {:.2f}) — no match",
+        movie,
+        best_slug,
+        best_score,
+        threshold,
+    )
+    return []
 
 
 class BookMyShowScraper(BaseScraper):
@@ -129,30 +140,33 @@ class BookMyShowScraper(BaseScraper):
             timeout=settings.http_timeout_seconds,
             headers={"Accept-Language": "en-IN,en-US;q=0.9,en;q=0.8"},
         ) as session:
-            found = await self._find_event(session, watch.movie, city_slug)
-            if not found:
+            events = await self._find_events(session, watch.movie, city_slug)
+            if not events:
                 logger.info(
                     "BMS: no event found for movie={!r} city={!r} (not listed yet?)",
                     watch.movie,
                     watch.city,
                 )
                 return []
-            movie_slug, event_code = found
-            payload = await self._fetch_showtimes(session, event_code, region, watch.date)
 
-        booking_url = (
-            f"{BASE_URL}/movies/{city_slug}/{movie_slug}/buytickets/"
-            f"{event_code}/{watch.date.strftime('%Y%m%d')}"
-        )
-        return self._parse_showtimes(payload, watch, booking_url)
+            shows: list[Show] = []
+            # A movie can be listed as several events (2D / 3D / re-release).
+            for movie_slug, event_code in events[:5]:
+                payload = await self._fetch_showtimes(session, event_code, region, watch.date)
+                booking_url = (
+                    f"{BASE_URL}/movies/{city_slug}/{movie_slug}/buytickets/"
+                    f"{event_code}/{watch.date.strftime('%Y%m%d')}"
+                )
+                shows.extend(self._parse_showtimes(payload, watch, booking_url))
+        return shows
 
-    async def _find_event(
+    async def _find_events(
         self, session: AsyncSession, movie: str, city_slug: str
-    ) -> tuple[str, str] | None:
-        """Scan the city's explore-movies page for the movie's (slug, event code)."""
+    ) -> list[tuple[str, str]]:
+        """Scan the city's explore-movies page for the movie's (slug, event code) pairs."""
         url = f"{BASE_URL}/explore/movies-{city_slug}"
         response = self._checked(await session.get(url), url)
-        return match_event(response.text, movie)
+        return match_events(response.text, movie)
 
     async def _fetch_showtimes(
         self, session: AsyncSession, event_code: str, region: str, show_date: date
