@@ -3,6 +3,9 @@
 load active watches → scrape → filter → hash → compare → notify → store hash.
 """
 
+import time
+from datetime import datetime, timezone
+
 from loguru import logger
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -45,20 +48,35 @@ class MonitorService:
         self._scraper = scraper
         self._notifier = notifier
         self._session_factory = session_factory or database.session_factory
+        # Heartbeat/observability — exposed via /health.
+        self.last_tick_at: datetime | None = None
+        self.last_tick_duration: float | None = None
+        self.last_tick_notifications: int = 0
 
     async def run_once(self) -> None:
+        started = time.monotonic()
         async with self._session_factory() as session:
             watches = await watch_repo.list_active(session)
-        logger.debug("Monitor tick: {} active watch(es)", len(watches))
+        sent_total = 0
         for watch in watches:
             try:
-                await self.check_watch(watch)
+                sent_total += await self.check_watch(watch)
             except ScraperBlockedError as exc:
                 logger.warning(
                     "watch={} ({!r}): {} — retrying next tick", watch.id, watch.movie, exc
                 )
             except Exception:
                 logger.exception("Check failed for watch={} ({!r})", watch.id, watch.movie)
+
+        self.last_tick_at = datetime.now(timezone.utc)
+        self.last_tick_duration = round(time.monotonic() - started, 2)
+        self.last_tick_notifications = sent_total
+        logger.info(
+            "Monitor tick: {} active watch(es) checked, {} notification(s) sent, took {}s",
+            len(watches),
+            sent_total,
+            self.last_tick_duration,
+        )
 
     async def check_watch(self, watch: Watch) -> int:
         """Check one watch. Returns the number of notifications sent."""

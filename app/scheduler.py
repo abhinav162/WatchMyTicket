@@ -13,7 +13,8 @@ def create_scheduler(monitor: MonitorService) -> AsyncIOScheduler:
         trigger="interval",
         seconds=settings.check_interval_seconds,
         id="monitor",
-        max_instances=1,   # never overlap two monitoring cycles
-        coalesce=True,     # collapse missed runs into one
+        max_instances=1,          # never overlap two monitoring cycles
+        coalesce=True,            # collapse missed runs into one
+        misfire_grace_time=30,    # still run if the loop was busy at fire time
     )
     return scheduler

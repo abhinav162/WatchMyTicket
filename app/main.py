@@ -41,6 +41,7 @@ async def lifespan(app: FastAPI):
     logger.info("Scheduler started (every {}s, scraper={})", settings.check_interval_seconds, settings.scraper)
 
     app.state.monitor = monitor
+    app.state.scheduler = scheduler
 
     yield
 
@@ -58,4 +59,14 @@ app.include_router(watch_router.router)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    scheduler = getattr(app.state, "scheduler", None)
+    monitor = getattr(app.state, "monitor", None)
+    job = scheduler.get_job("monitor") if scheduler else None
+    return {
+        "status": "ok",
+        "scheduler_running": bool(scheduler and scheduler.running),
+        "next_check_at": job.next_run_time.isoformat() if job and job.next_run_time else None,
+        "last_tick_at": monitor.last_tick_at.isoformat() if monitor and monitor.last_tick_at else None,
+        "last_tick_duration_seconds": monitor.last_tick_duration if monitor else None,
+        "last_tick_notifications": monitor.last_tick_notifications if monitor else None,
+    }
