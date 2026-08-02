@@ -85,10 +85,13 @@ mock provider returns fake shows so you can see notifications end to end.
 
 ```bash
 cp .env.example .env    # set TELEGRAM_BOT_TOKEN
-docker compose -f docker/docker-compose.yml up --build
+docker compose -f docker/docker-compose.yml up -d --build
 ```
 
-This runs the app with PostgreSQL.
+Runs the app on SQLite, stored in the `app_storage` named volume so the
+database survives container restarts and rebuilds. To switch to PostgreSQL
+later, add a `db` service back to `docker/docker-compose.yml` and point
+`DATABASE_URL` at it.
 
 ## Bot commands
 
