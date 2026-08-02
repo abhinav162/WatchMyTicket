@@ -18,6 +18,7 @@ anything else raises and the monitor retries on the next tick. Polling stays
 conservative (one request cycle per watch per minute).
 """
 
+import difflib
 import re
 from datetime import date
 
@@ -55,6 +56,49 @@ REGION_CODES = {
 }
 
 
+def _compress(text: str) -> str:
+    """Reduce a title/slug to bare letters+digits: 'Spider-Man: Brand New Day'
+    and 'spiderman brand new day' both become 'spidermanbrandnewday'."""
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def match_event(html: str, movie: str, threshold: float = 0.75) -> tuple[str, str] | None:
+    """Find the (slug, event_code) on an explore page best matching the movie name.
+
+    Matching is fuzzy on the compressed strings so user input survives
+    punctuation, hyphenation and spacing differences from the BMS slug.
+    """
+    # URLs can appear both as plain hrefs and inside embedded JSON with escaped slashes.
+    html = html.replace("\\/", "/")
+    candidates = set(re.findall(r"/movies/[a-z0-9-]+/([a-z0-9-]+)/(ET\d+)", html))
+    target = _compress(movie)
+    if not target or not candidates:
+        return None
+
+    best: tuple[str, str] | None = None
+    best_score = 0.0
+    for slug, code in candidates:
+        compressed = _compress(slug)
+        score = difflib.SequenceMatcher(None, target, compressed).ratio()
+        if target in compressed or compressed in target:
+            score = max(score, 0.95)
+        if score > best_score:
+            best_score, best = score, (slug, code)
+
+    if best and best_score >= threshold:
+        logger.debug("BMS: matched {!r} -> slug={} score={:.2f}", movie, best[0], best_score)
+        return best
+    if best:
+        logger.info(
+            "BMS: best candidate for {!r} was slug={} (score {:.2f} < {:.2f}) — no match",
+            movie,
+            best[0],
+            best_score,
+            threshold,
+        )
+    return None
+
+
 class BookMyShowScraper(BaseScraper):
     name = "bookmyshow"
 
@@ -79,50 +123,30 @@ class BookMyShowScraper(BaseScraper):
             timeout=settings.http_timeout_seconds,
             headers={"Accept-Language": "en-IN,en-US;q=0.9,en;q=0.8"},
         ) as session:
-            event_code = await self._find_event_code(session, watch.movie, city_slug)
-            if not event_code:
+            found = await self._find_event(session, watch.movie, city_slug)
+            if not found:
                 logger.info(
                     "BMS: no event found for movie={!r} city={!r} (not listed yet?)",
                     watch.movie,
                     watch.city,
                 )
                 return []
+            movie_slug, event_code = found
             payload = await self._fetch_showtimes(session, event_code, region, watch.date)
 
-        movie_slug = slugify(watch.movie)
         booking_url = (
             f"{BASE_URL}/movies/{city_slug}/{movie_slug}/buytickets/"
             f"{event_code}/{watch.date.strftime('%Y%m%d')}"
         )
         return self._parse_showtimes(payload, watch, booking_url)
 
-    async def _find_event_code(self, session: AsyncSession, movie: str, city_slug: str) -> str | None:
-        """Scan the city's explore-movies page for a /movies/.../ET... link matching the title."""
+    async def _find_event(
+        self, session: AsyncSession, movie: str, city_slug: str
+    ) -> tuple[str, str] | None:
+        """Scan the city's explore-movies page for the movie's (slug, event code)."""
         url = f"{BASE_URL}/explore/movies-{city_slug}"
         response = self._checked(await session.get(url), url)
-        html = response.text
-
-        movie_slug = slugify(movie)
-        # Exact slug first, then a loose match on the significant words.
-        patterns = [rf"/movies/[a-z0-9-]+/{re.escape(movie_slug)}/(ET\d+)"]
-        words = [w for w in movie_slug.split("-") if len(w) > 2]
-        if words:
-            loose = "[a-z0-9-]*".join(re.escape(w) for w in words)
-            patterns.append(rf"/movies/[a-z0-9-]+/[a-z0-9-]*{loose}[a-z0-9-]*/(ET\d+)")
-
-        for pattern in patterns:
-            match = re.search(pattern, html)
-            if match:
-                return match.group(1)
-
-        # Fallback: embedded JSON often carries "eventCode":"ET..." next to the title.
-        title_pattern = re.escape(movie.strip())
-        match = re.search(
-            rf'"(?:eventName|title)"\s*:\s*"{title_pattern}".{{0,500}}?"(?:eventCode|code)"\s*:\s*"(ET\d+)"',
-            html,
-            re.IGNORECASE | re.DOTALL,
-        )
-        return match.group(1) if match else None
+        return match_event(response.text, movie)
 
     async def _fetch_showtimes(
         self, session: AsyncSession, event_code: str, region: str, show_date: date

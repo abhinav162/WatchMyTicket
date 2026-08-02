@@ -1,7 +1,7 @@
 from datetime import date
 
 from app.models import Watch
-from app.scrapers.bookmyshow import BookMyShowScraper
+from app.scrapers.bookmyshow import BookMyShowScraper, match_event
 
 SAMPLE_PAYLOAD = {
     "ShowDetails": [
@@ -70,6 +70,41 @@ def test_parse_empty_payload():
     scraper = BookMyShowScraper()
     assert scraper._parse_showtimes({}, make_watch(), "url") == []
     assert scraper._parse_showtimes({"ShowDetails": None}, make_watch(), "url") == []
+
+
+EXPLORE_HTML = """
+<a href="/movies/bengaluru/spider-man-brand-new-day/ET00329567">Spider-Man</a>
+<a href="/movies/bengaluru/avatar-fire-and-ash/ET00412229">Avatar</a>
+<a href="/movies/bengaluru/mission-impossible-8/ET00371405">MI8</a>
+"""
+
+
+def test_match_event_survives_missing_hyphens_and_punctuation():
+    assert match_event(EXPLORE_HTML, "spiderman brand new day") == (
+        "spider-man-brand-new-day",
+        "ET00329567",
+    )
+    assert match_event(EXPLORE_HTML, "Spider-Man: Brand New Day") == (
+        "spider-man-brand-new-day",
+        "ET00329567",
+    )
+
+
+def test_match_event_partial_title():
+    # a distinctive prefix of the title should still match via containment
+    assert match_event(EXPLORE_HTML, "avatar fire and ash") == (
+        "avatar-fire-and-ash",
+        "ET00412229",
+    )
+
+
+def test_match_event_rejects_unrelated_titles():
+    assert match_event(EXPLORE_HTML, "Oppenheimer") is None
+
+
+def test_match_event_empty_inputs():
+    assert match_event("", "spiderman") is None
+    assert match_event(EXPLORE_HTML, "") is None
 
 
 def test_region_code_mapping():
