@@ -191,32 +191,80 @@ class BookMyShowScraper(BaseScraper):
                 "BookMyShow showtimes endpoint returned non-JSON (challenge page?)"
             ) from exc
 
+    @staticmethod
+    def _child_meta(child: dict) -> tuple[str | None, str]:
+        """Extract (format, language) from a ChildEvents entry, tolerating both
+        explicit fields and the '(Dolby Cinema 2D)' suffix embedded in titles."""
+        fmt = child.get("EventDimension") or child.get("EventDimensionType")
+        if not fmt:
+            title = child.get("EventTitle") or child.get("EventName") or ""
+            match = re.search(r"\(([^)]+)\)\s*$", title)
+            fmt = match.group(1) if match else None
+        language = child.get("EventLanguage") or child.get("EventLang") or ""
+        return fmt, language
+
     def _parse_showtimes(self, payload: dict, watch: Watch, booking_url: str) -> list[Show]:
+        """Walk the showtimes payload without assuming a fixed nesting.
+
+        BMS has shipped (at least) two shapes: venues nested inside each
+        ChildEvents entry ('VenueList'), and venues as a sibling list with
+        each ShowTime carrying the child's EventCode. We recursively find
+        every dict with a VenueName + ShowTimes and resolve format/language
+        from the showtime's EventCode or the enclosing ChildEvents entry.
+        """
+        # EventCode -> (format, language) from every ChildEvents entry anywhere.
+        code_meta: dict[str, tuple[str | None, str]] = {}
+
+        def collect_children(node) -> None:
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if key == "ChildEvents" and isinstance(value, list):
+                        for child in value:
+                            if isinstance(child, dict) and child.get("EventCode"):
+                                code_meta[child["EventCode"]] = self._child_meta(child)
+                    collect_children(value)
+            elif isinstance(node, list):
+                for item in node:
+                    collect_children(item)
+
+        collect_children(payload)
+
         shows: list[Show] = []
-        for detail in payload.get("ShowDetails", []) or []:
-            event = detail.get("Event", {}) or {}
-            for child in event.get("ChildEvents", []) or []:
-                fmt = child.get("EventDimension") or child.get("EventDimensionType") or "2D"
-                language = child.get("EventLanguage") or ""
-                title = child.get("EventTitle") or watch.movie
-                for venue in child.get("VenueList", []) or []:
-                    theatre = venue.get("VenueName") or ""
-                    if not theatre:
-                        continue
-                    for show_time in venue.get("ShowTimes", []) or []:
-                        time_str = show_time.get("ShowTime") or ""
+
+        def walk(node, ctx: tuple[str | None, str]) -> None:
+            if isinstance(node, dict):
+                if node.get("EventCode") in code_meta:
+                    ctx = code_meta[node["EventCode"]]
+                elif "EventLang" in node or "EventLanguage" in node or "EventDimension" in node:
+                    ctx = self._child_meta(node)
+
+                theatre = node.get("VenueName")
+                showtimes = node.get("ShowTimes")
+                if theatre and isinstance(showtimes, list):
+                    for st in showtimes:
+                        if not isinstance(st, dict):
+                            continue
+                        time_str = st.get("ShowTime") or st.get("ShowTimeDisplay") or ""
                         if not time_str:
                             continue
+                        fmt, language = code_meta.get(st.get("EventCode", ""), ctx)
                         shows.append(
                             Show(
-                                movie=title,
+                                movie=watch.movie,
                                 city=watch.city,
                                 theatre=theatre,
-                                format=fmt,
+                                format=fmt or "2D",
                                 language=language,
                                 date=watch.date,
                                 time=time_str,
                                 booking_url=booking_url,
                             )
                         )
+                for value in node.values():
+                    walk(value, ctx)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item, ctx)
+
+        walk(payload, (None, ""))
         return shows

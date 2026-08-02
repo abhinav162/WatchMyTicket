@@ -66,6 +66,59 @@ def test_parse_showtimes():
     assert screenx[0].theatre == "PVR Vega Mall"
 
 
+# The shape observed live in 2026: ChildEvents describe formats (embedded in
+# the title, language in 'EventLang'), venues are a sibling list, and each
+# ShowTime carries the ChildEvent's EventCode.
+SIBLING_VENUES_PAYLOAD = {
+    "ShowDetails": [
+        {
+            "Date": "20260802",
+            "Event": {
+                "EventTitle": "Spider-Man: Brand New Day",
+                "ChildEvents": [
+                    {
+                        "EventTitle": "Spider-Man: Brand New Day (Dolby Cinema 2D)",
+                        "EventCode": "ET00447841",
+                        "EventLang": "English",
+                    },
+                    {
+                        "EventTitle": "Spider-Man: Brand New Day (ScreenX)",
+                        "EventCode": "ET00447842",
+                        "EventLang": "English",
+                    },
+                ],
+            },
+            "Venues": [
+                {
+                    "VenueName": "PVR Vega City Mall",
+                    "ShowTimes": [
+                        {"ShowTime": "7:30 PM", "EventCode": "ET00447842"},
+                        {"ShowTime": "9:00 PM", "EventCode": "ET00447841"},
+                    ],
+                },
+                {
+                    "VenueName": "INOX Forum",
+                    "ShowTimes": [{"ShowTime": "10:15 PM", "EventCode": "ET00447841"}],
+                },
+            ],
+        }
+    ]
+}
+
+
+def test_parse_sibling_venues_shape():
+    scraper = BookMyShowScraper()
+    shows = scraper._parse_showtimes(SIBLING_VENUES_PAYLOAD, make_watch(), "https://x/book")
+
+    assert len(shows) == 3
+    by_time = {s.time: s for s in shows}
+    assert by_time["7:30 PM"].format == "ScreenX"
+    assert by_time["7:30 PM"].theatre == "PVR Vega City Mall"
+    assert by_time["9:00 PM"].format == "Dolby Cinema 2D"
+    assert by_time["10:15 PM"].theatre == "INOX Forum"
+    assert all(s.language == "English" for s in shows)
+
+
 def test_parse_empty_payload():
     scraper = BookMyShowScraper()
     assert scraper._parse_showtimes({}, make_watch(), "url") == []
