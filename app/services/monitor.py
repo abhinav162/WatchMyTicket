@@ -84,7 +84,11 @@ class MonitorService:
         )
 
     async def check_watch(self, watch: Watch) -> int:
-        """Check one watch. Returns the number of notifications sent."""
+        """Check one watch. Returns the number of new shows notified this tick.
+
+        All shows newly discovered in this tick are sent as a single digest
+        message via one notify() call, not one message per show.
+        """
         shows = await self._scraper.scrape(watch)
         matching = filter_shows(watch, shows)
 
@@ -92,17 +96,17 @@ class MonitorService:
             known = await notification_repo.known_hashes(session, watch.id)
             result = diff(known, matching)
 
-            sent = 0
-            for show in result.added:
-                await self._notifier.notify(watch, show)
-                await notification_repo.record(session, watch.id, show_hash(show))
-                sent += 1
+            if result.added:
+                await self._notifier.notify(watch, result.added)
+                for show in result.added:
+                    await notification_repo.record(session, watch.id, show_hash(show))
 
             db_watch = await watch_repo.get(session, watch.id)
             if db_watch is not None:
                 await watch_repo.touch_last_checked(session, db_watch)
             await session.commit()
 
+        sent = len(result.added)
         if sent:
             logger.info("watch={} ({!r}): {} new show(s) notified", watch.id, watch.movie, sent)
         return sent

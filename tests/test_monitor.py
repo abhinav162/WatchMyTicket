@@ -36,10 +36,12 @@ class FakeScraper(BaseScraper):
 
 class SpyNotifier:
     def __init__(self):
-        self.sent = []
+        self.sent = []  # flattened (watch_id, show) pairs across every notify() call
+        self.batches = []  # one (watch_id, [shows]) entry per notify() call
 
-    async def notify(self, watch, show):
-        self.sent.append((watch.id, show))
+    async def notify(self, watch, shows):
+        self.batches.append((watch.id, list(shows)))
+        self.sent.extend((watch.id, show) for show in shows)
 
 
 # ------------------------------------------------------------- filtering
@@ -105,6 +107,23 @@ async def test_first_check_notifies_second_check_does_not(session_factory, seede
 
     await monitor.run_once()
     assert len(notifier.sent) == 2  # duplicates prevented
+
+
+@pytest.mark.asyncio
+async def test_same_tick_discoveries_are_batched_into_one_notification(session_factory, seeded_watch):
+    shows = [
+        make_show(),
+        make_show(time="10:00 PM"),
+        make_show(theatre="INOX Forum", time="9:00 PM"),
+    ]
+    notifier = SpyNotifier()
+    monitor = MonitorService(FakeScraper(shows), notifier, session_factory=session_factory)
+
+    await monitor.run_once()
+
+    assert len(notifier.batches) == 1  # one Telegram message for the whole tick
+    assert len(notifier.batches[0][1]) == 3  # containing all 3 new shows
+    assert len(notifier.sent) == 3
 
 
 @pytest.mark.asyncio
