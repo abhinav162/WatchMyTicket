@@ -219,4 +219,5 @@ __marimo__/
 
 # Ticket Watcher local data
 storage/
-debug_bms.html
+debug_bms*.html
+debug_bms*.json

@@ -8,6 +8,7 @@ links, the raw HTML is saved to debug_bms.html so it can be inspected/shared.
 """
 
 import asyncio
+import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -56,18 +57,52 @@ async def main() -> None:
         if not matched:
             return
 
+        region = scraper._region_code(city)
+        date_code = show_date.strftime("%Y%m%d")
+        for slug, code in matched:
+            # 1. Raw showtimes API response
+            api_url = f"{BASE_URL}/api/movies-data/showtimes-by-event"
+            params = {
+                "appCode": "MOBAND2",
+                "appVersion": "14304",
+                "language": "en",
+                "eventCode": code,
+                "regionCode": region,
+                "subRegion": region,
+                "bmsId": "1.0",
+                "token": "",
+                "dateCode": date_code,
+            }
+            api_response = await session.get(api_url, params=params)
+            body = api_response.text
+            print(f"\n[{code}] showtimes API -> HTTP {api_response.status_code}, {len(body)} bytes")
+            print(f"   first 300 chars: {body[:300]!r}")
+            api_dump = Path(f"debug_bms_showtimes_{code}.json")
+            api_dump.write_text(body)
+            print(f"   full response saved to {api_dump.resolve()}")
+
+            # 2. The buytickets page (server-rendered, alternative data source)
+            bt_url = f"{BASE_URL}/movies/{city_slug}/{slug}/buytickets/{code}/{date_code}"
+            bt_response = await session.get(bt_url)
+            bt_html = bt_response.text
+            times_found = len(re.findall(r"\d{1,2}:\d{2}\s?(?:AM|PM)", bt_html))
+            print(f"[{code}] buytickets page -> HTTP {bt_response.status_code}, "
+                  f"{len(bt_html)} bytes, {times_found} time-like strings")
+            bt_dump = Path(f"debug_bms_buytickets_{code}.html")
+            bt_dump.write_text(bt_html)
+            print(f"   page saved to {bt_dump.resolve()}")
+
     watch = Watch(
         user_id=0, movie=movie, city=city, date=show_date, formats=[], languages=[], theatres=[]
     )
     shows = await scraper.scrape(watch)
-    print(f"\n{len(shows)} show(s) on {show_date}:")
+    print(f"\n{len(shows)} show(s) on {show_date} via the scraper:")
     for show in shows[:30]:
         print(f"   {show.theatre} | {show.time} | {show.format} | {show.language}")
     if len(shows) > 30:
         print(f"   ... and {len(shows) - 30} more")
     if not shows:
-        print("Event matched but no shows for that date — tickets may not be open yet,")
-        print("or the showtimes API returned an empty/unexpected payload.")
+        print("Event matched but the scraper parsed no shows — share the debug_bms_* files above.")
 
 
 if __name__ == "__main__":
