@@ -72,7 +72,13 @@ def match_event(html: str, movie: str, threshold: float = 0.75) -> tuple[str, st
     html = html.replace("\\/", "/")
     candidates = set(re.findall(r"/movies/[a-z0-9-]+/([a-z0-9-]+)/(ET\d+)", html))
     target = _compress(movie)
-    if not target or not candidates:
+    if not candidates:
+        logger.warning(
+            "BMS: explore page contained no /movies/<slug>/ET... links at all "
+            "(JS-rendered or challenge page?) — run `python -m app.debug_scrape` to inspect"
+        )
+        return None
+    if not target:
         return None
 
     best: tuple[str, str] | None = None
