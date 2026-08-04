@@ -17,7 +17,7 @@ from curl_cffi.requests import AsyncSession
 
 from app.config import settings
 from app.models import Watch
-from app.scrapers.bookmyshow import BASE_URL, MOVIE_LINK_RE, BookMyShowScraper, match_events
+from app.scrapers.bookmyshow import BASE_URL, MOVIE_LINK_RE, BookMyShowScraper, match_events, proxy_with_session
 from app.utils.text import parse_user_date, slugify
 
 
@@ -33,11 +33,12 @@ async def main() -> None:
     print(f"movie={movie!r} city={city!r} date={show_date} region={scraper._region_code(city)}")
 
     url = f"{BASE_URL}/explore/movies-{city_slug}"
+    proxy = proxy_with_session(settings.bms_proxy_url) if settings.bms_proxy_url else None
     async with AsyncSession(
         impersonate=settings.bms_impersonate,
         timeout=settings.http_timeout_seconds,
         headers={"Accept-Language": "en-IN,en-US;q=0.9,en;q=0.8"},
-        proxy=settings.bms_proxy_url or None,
+        proxy=proxy,
     ) as session:
         response = await session.get(url)
         print(f"\nGET {url}\n -> HTTP {response.status_code}, {len(response.text)} bytes")

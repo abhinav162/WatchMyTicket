@@ -27,7 +27,9 @@ conservative (one request cycle per watch per minute).
 
 import difflib
 import re
+import secrets
 from datetime import date
+from urllib.parse import urlsplit, urlunsplit
 
 from curl_cffi.requests import AsyncSession
 from loguru import logger
@@ -66,6 +68,31 @@ REGION_CODES = {
 # Explore pages link movies as /movies/<slug>/ET... (no city segment); other
 # pages use /movies/<city>/<slug>/ET... — accept both.
 MOVIE_LINK_RE = re.compile(r"/movies/(?:[a-z0-9-]+/)?([a-z0-9-]+)/(ET\d+)")
+
+
+def proxy_with_session(base_url: str) -> str:
+    """Append a fresh sticky-session id to a residential-proxy URL's username.
+
+    A single scrape makes ~15 requests (explore page + every format/language
+    variant). Confirmed live that this provider rotates to a brand new
+    residential IP on every request by default — meaning one BMS session
+    would hop across a dozen different residential IPs within seconds, which
+    itself is a bot-like pattern. Appending '_session-<id>' (this provider's
+    sticky-session convention, confirmed empirically) pins one IP for every
+    request sharing that id. A fresh id per scrape() call means different
+    ticks still rotate IPs over time, spreading load across the pool.
+    """
+    parts = urlsplit(base_url)
+    if not parts.username:
+        return base_url
+    session_id = secrets.token_hex(4)
+    userinfo = f"{parts.username}_session-{session_id}"
+    if parts.password:
+        userinfo += f":{parts.password}"
+    netloc = f"{userinfo}@{parts.hostname}"
+    if parts.port:
+        netloc += f":{parts.port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
 def match_events(html: str, movie: str, threshold: float = 0.75) -> list[tuple[str, str]]:
@@ -142,11 +169,12 @@ class BookMyShowScraper(BaseScraper):
                 f"{event_code}/{watch.date.strftime('%Y%m%d')}"
             )
 
+        proxy = proxy_with_session(settings.bms_proxy_url) if settings.bms_proxy_url else None
         async with AsyncSession(
             impersonate=settings.bms_impersonate,
             timeout=settings.http_timeout_seconds,
             headers={"Accept-Language": "en-IN,en-US;q=0.9,en;q=0.8"},
-            proxy=settings.bms_proxy_url or None,
+            proxy=proxy,
         ) as session:
             events = await self._find_events(session, watch.movie, city_slug)
             if not events:

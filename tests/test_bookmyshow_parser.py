@@ -4,7 +4,7 @@ import pytest
 
 from app.config import settings
 from app.models import Watch
-from app.scrapers.bookmyshow import BookMyShowScraper, match_events
+from app.scrapers.bookmyshow import BookMyShowScraper, match_events, proxy_with_session
 
 SAMPLE_PAYLOAD = {
     "ShowDetails": [
@@ -314,3 +314,29 @@ async def test_scrape_caps_sibling_events(monkeypatch):
     await scraper.scrape(make_watch(date=date(2026, 8, 4)))
 
     assert fetched_codes == ["ET_BASE"]  # sibling ET_SCREENX skipped due to the cap
+
+
+# --------------------------------------------------------------- proxy sessions
+
+
+def test_proxy_with_session_appends_session_id_to_username():
+    result = proxy_with_session("http://user:pass@proxy.example.com:3120")
+    assert result.startswith("http://user_session-")
+    assert result.endswith(":pass@proxy.example.com:3120")
+
+
+def test_proxy_with_session_generates_a_fresh_id_each_call():
+    a = proxy_with_session("http://user:pass@proxy.example.com:3120")
+    b = proxy_with_session("http://user:pass@proxy.example.com:3120")
+    assert a != b  # different session ids -> different exit IPs
+
+
+def test_proxy_with_session_without_password():
+    result = proxy_with_session("http://user@proxy.example.com:3120")
+    assert result.startswith("http://user_session-")
+    assert "@proxy.example.com:3120" in result
+    assert ":" not in result.split("@")[0].split("_session-")[1]  # no password segment
+
+
+def test_proxy_with_session_passthrough_when_no_username():
+    assert proxy_with_session("http://proxy.example.com:3120") == "http://proxy.example.com:3120"
