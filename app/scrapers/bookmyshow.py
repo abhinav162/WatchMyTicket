@@ -258,8 +258,18 @@ class BookMyShowScraper(BaseScraper):
         each ShowTime carrying the child's EventCode. We recursively find
         every dict with a VenueName + ShowTimes and resolve format/language
         from the showtime's EventCode or the enclosing ChildEvents entry.
+
+        Each ShowDetails entry carries its own 'Date'. BMS has been observed
+        to silently substitute a different date's data when asked for a
+        dateCode it doesn't have cached (confirmed with an out-of-range
+        date, which came back as whatever date it had default), so entries
+        whose Date doesn't match the requested one are discarded rather
+        than trusted — otherwise a stale/substituted response could be
+        mislabeled with the watch's target date and trigger a false
+        notification for a date that was never actually offered.
         """
         code_meta = self._collect_child_codes(payload)
+        requested_date = watch.date.strftime("%Y%m%d")
         shows: list[Show] = []
 
         def walk(node, ctx: tuple[str | None, str]) -> None:
@@ -297,5 +307,18 @@ class BookMyShowScraper(BaseScraper):
                 for item in node:
                     walk(item, ctx)
 
-        walk(payload, (None, ""))
+        for detail in payload.get("ShowDetails", []) or []:
+            if not isinstance(detail, dict):
+                continue
+            actual_date = detail.get("Date")
+            if actual_date and actual_date != requested_date:
+                logger.warning(
+                    "BMS: requested date {} but a ShowDetails entry is dated {} — "
+                    "discarding it (BMS may not have the requested date cached yet)",
+                    requested_date,
+                    actual_date,
+                )
+                continue
+            walk(detail, (None, ""))
+
         return shows

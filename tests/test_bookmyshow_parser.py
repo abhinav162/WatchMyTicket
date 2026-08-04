@@ -45,8 +45,8 @@ SAMPLE_PAYLOAD = {
 }
 
 
-def make_watch() -> Watch:
-    return Watch(
+def make_watch(**overrides) -> Watch:
+    data = dict(
         user_id=1,
         movie="Spider-Man",
         city="Bengaluru",
@@ -55,6 +55,8 @@ def make_watch() -> Watch:
         languages=[],
         theatres=[],
     )
+    data.update(overrides)
+    return Watch(**data)
 
 
 def test_parse_showtimes():
@@ -75,7 +77,7 @@ def test_parse_showtimes():
 SIBLING_VENUES_PAYLOAD = {
     "ShowDetails": [
         {
-            "Date": "20260802",
+            "Date": "20260816",  # matches make_watch()'s default date
             "Event": {
                 "EventTitle": "Spider-Man: Brand New Day",
                 "ChildEvents": [
@@ -126,6 +128,41 @@ def test_parse_empty_payload():
     scraper = BookMyShowScraper()
     assert scraper._parse_showtimes({}, make_watch(), "url") == []
     assert scraper._parse_showtimes({"ShowDetails": None}, make_watch(), "url") == []
+
+
+def test_parse_discards_showdetails_for_a_different_date():
+    # Regression: BMS can silently substitute a different date's data (proven
+    # live with an out-of-range dateCode). A ShowDetails entry dated
+    # differently from the watch's target date must never be trusted.
+    payload = {
+        "ShowDetails": [
+            {
+                "Date": "20260817",  # NOT the watch's requested 2026-08-16
+                "Venues": [{"VenueName": "PVR Vega Mall", "ShowTimes": [{"ShowTime": "7:30 PM"}]}],
+            }
+        ]
+    }
+    scraper = BookMyShowScraper()
+    assert scraper._parse_showtimes(payload, make_watch(), "url") == []
+
+
+def test_parse_keeps_matching_date_alongside_mismatched_one():
+    payload = {
+        "ShowDetails": [
+            {
+                "Date": "20260817",
+                "Venues": [{"VenueName": "Wrong Date Venue", "ShowTimes": [{"ShowTime": "1:00 PM"}]}],
+            },
+            {
+                "Date": "20260816",
+                "Venues": [{"VenueName": "PVR Vega Mall", "ShowTimes": [{"ShowTime": "7:30 PM"}]}],
+            },
+        ]
+    }
+    scraper = BookMyShowScraper()
+    shows = scraper._parse_showtimes(payload, make_watch(), "url")
+    assert len(shows) == 1
+    assert shows[0].theatre == "PVR Vega Mall"
 
 
 # Explore pages link movies WITHOUT a city segment (real format observed live);
@@ -248,7 +285,7 @@ async def test_scrape_fetches_sibling_events_independently(monkeypatch):
     monkeypatch.setattr(scraper, "_find_events", fake_find_events)
     monkeypatch.setattr(scraper, "_fetch_showtimes", fake_fetch_showtimes)
 
-    shows = await scraper.scrape(make_watch())
+    shows = await scraper.scrape(make_watch(date=date(2026, 8, 4)))
 
     assert fetched_codes == ["ET_BASE", "ET_SCREENX"]
     by_time = {s.time: s for s in shows}
@@ -274,6 +311,6 @@ async def test_scrape_caps_sibling_events(monkeypatch):
     monkeypatch.setattr(scraper, "_find_events", fake_find_events)
     monkeypatch.setattr(scraper, "_fetch_showtimes", fake_fetch_showtimes)
 
-    await scraper.scrape(make_watch())
+    await scraper.scrape(make_watch(date=date(2026, 8, 4)))
 
     assert fetched_codes == ["ET_BASE"]  # sibling ET_SCREENX skipped due to the cap
