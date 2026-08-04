@@ -2,11 +2,11 @@ from datetime import date
 
 import pytest
 
-from app.models import Watch, WatchStatus
+from app.models import User, Watch, WatchStatus
 from app.repositories import watch_repo
 from app.schemas import Show
 from app.scrapers.base import BaseScraper, ScraperBlockedError
-from app.services.monitor import MonitorService, filter_shows
+from app.services.monitor import MonitorService, _scrape_key, filter_shows
 
 
 def make_show(**overrides) -> Show:
@@ -29,8 +29,10 @@ class FakeScraper(BaseScraper):
 
     def __init__(self, shows):
         self.shows = shows
+        self.calls = []
 
     async def scrape(self, watch):
+        self.calls.append(watch.id)
         return list(self.shows)
 
 
@@ -183,3 +185,102 @@ async def test_last_checked_is_updated(session_factory, seeded_watch):
     async with session_factory() as session:
         watch = await watch_repo.get(session, seeded_watch)
         assert watch.last_checked is not None
+
+
+# --------------------------------------------------------- scrape dedup/cache
+
+
+def test_scrape_key_ignores_filters_and_case_spacing():
+    a = make_watch(movie="Spider-Man: Brand New Day", city="Bengaluru", formats=["ScreenX"])
+    b = make_watch(movie="spiderman brand new day", city=" bengaluru ", formats=["IMAX"], theatres=["X"])
+    assert _scrape_key(a) == _scrape_key(b)
+
+
+def test_scrape_key_differs_by_date():
+    a = make_watch(date=date(2026, 8, 8))
+    b = make_watch(date=date(2026, 8, 9))
+    assert _scrape_key(a) != _scrape_key(b)
+
+
+async def _seed_two_overlapping_watches(session_factory):
+    """Two watches for the same movie/city/date, different filters."""
+    async with session_factory() as session:
+        user = User(telegram_id=333, chat_id=444)
+        session.add(user)
+        await session.flush()
+        watch_a = Watch(
+            user_id=user.id,
+            movie="Spider-Man: Brand New Day",
+            city="Bengaluru",
+            date=date(2026, 8, 8),
+            formats=["ScreenX"],
+            languages=[],
+            theatres=[],
+        )
+        watch_b = Watch(
+            user_id=user.id,
+            movie="spiderman brand new day",
+            city="Bengaluru",
+            date=date(2026, 8, 8),
+            formats=["IMAX"],
+            languages=[],
+            theatres=[],
+        )
+        session.add_all([watch_a, watch_b])
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_overlapping_watches_share_one_scrape_per_tick(session_factory):
+    await _seed_two_overlapping_watches(session_factory)
+    shows = [
+        make_show(theatre="INOX Forum", format="ScreenX", date=date(2026, 8, 8)),
+        make_show(theatre="PVR Vega", format="IMAX", date=date(2026, 8, 8)),
+    ]
+    scraper = FakeScraper(shows)
+    notifier = SpyNotifier()
+    monitor = MonitorService(scraper, notifier, session_factory=session_factory)
+
+    await monitor.run_once()
+
+    assert len(scraper.calls) == 1  # one real scrape covered both watches
+    # each watch still only got notified about shows matching its own filter
+    formats_notified = {s.format for _, s in notifier.sent}
+    assert formats_notified == {"ScreenX", "IMAX"}
+
+
+@pytest.mark.asyncio
+async def test_non_overlapping_watches_each_get_their_own_scrape(session_factory):
+    async with session_factory() as session:
+        user = User(telegram_id=555, chat_id=666)
+        session.add(user)
+        await session.flush()
+        session.add_all(
+            [
+                Watch(
+                    user_id=user.id,
+                    movie="Spider-Man",
+                    city="Bengaluru",
+                    date=date(2026, 8, 8),
+                    formats=[],
+                    languages=[],
+                    theatres=[],
+                ),
+                Watch(
+                    user_id=user.id,
+                    movie="Spider-Man",
+                    city="Bengaluru",
+                    date=date(2026, 8, 9),  # different date -> different key
+                    formats=[],
+                    languages=[],
+                    theatres=[],
+                ),
+            ]
+        )
+        await session.commit()
+
+    scraper = FakeScraper([])
+    monitor = MonitorService(scraper, SpyNotifier(), session_factory=session_factory)
+    await monitor.run_once()
+
+    assert len(scraper.calls) == 2
