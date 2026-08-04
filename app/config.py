@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     # are each a separately-queryable event; cap how many a single watch check
     # will fetch per tick (anchor event included) to bound worst-case latency.
     bms_max_events_per_watch: int = 20
+    # Optional proxy for BookMyShow requests, e.g. "http://user:pass@host:port".
+    # Datacenter IPs (cloud VMs) get 403'd by BMS's bot-protection far more
+    # than residential/ISP IPs; empty means no proxy (direct connection).
+    bms_proxy_url: str = ""
 
     log_level: str = "INFO"
 

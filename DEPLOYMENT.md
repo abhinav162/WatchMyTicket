@@ -136,3 +136,24 @@ docker compose -f docker/docker-compose.yml down -v
   SQLite doesn't handle concurrent writers from separate processes well.
 - Keep `.env` out of version control (already gitignored) and `chmod 600` it
   on the server — it holds your Telegram bot token.
+
+## Routing BookMyShow requests through a residential proxy
+
+Cloud/datacenter IPs (including Oracle Cloud VMs) get 403'd by BookMyShow's
+bot-protection far more often than residential/ISP IPs. Verified directly on
+this deployment: the exact same request that returned 403 going out the VM's
+own IP returned 200 through a residential proxy (SmartProxy).
+
+Set `BMS_PROXY_URL` in the server's `.env` (never commit a real value):
+
+```
+BMS_PROXY_URL=http://<proxy-username>:<proxy-password>@<proxy-host>:<proxy-port>
+```
+
+Then redeploy:
+
+```bash
+docker compose -f docker/docker-compose.yml up -d --build
+```
+
+An empty `BMS_PROXY_URL` (the default) connects directly, unchanged.

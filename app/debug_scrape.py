@@ -37,6 +37,7 @@ async def main() -> None:
         impersonate=settings.bms_impersonate,
         timeout=settings.http_timeout_seconds,
         headers={"Accept-Language": "en-IN,en-US;q=0.9,en;q=0.8"},
+        proxy=settings.bms_proxy_url or None,
     ) as session:
         response = await session.get(url)
         print(f"\nGET {url}\n -> HTTP {response.status_code}, {len(response.text)} bytes")

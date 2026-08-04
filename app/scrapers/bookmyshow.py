@@ -146,6 +146,7 @@ class BookMyShowScraper(BaseScraper):
             impersonate=settings.bms_impersonate,
             timeout=settings.http_timeout_seconds,
             headers={"Accept-Language": "en-IN,en-US;q=0.9,en;q=0.8"},
+            proxy=settings.bms_proxy_url or None,
         ) as session:
             events = await self._find_events(session, watch.movie, city_slug)
             if not events:
