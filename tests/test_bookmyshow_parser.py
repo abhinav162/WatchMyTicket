@@ -312,6 +312,110 @@ async def test_scrape_fetches_sibling_events_independently(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_scrape_skips_irrelevant_sibling_when_wanted_formats_given(monkeypatch):
+    scraper = BookMyShowScraper()
+    fetched_codes = []
+
+    async def fake_find_events(session, movie, city_slug):
+        return [("spiderman-brand-new-day", "ET_BASE")]
+
+    async def fake_fetch_showtimes(session, event_code, region, show_date):
+        fetched_codes.append(event_code)
+        return {"ET_BASE": ANCHOR_PAYLOAD, "ET_SCREENX": SCREENX_PAYLOAD}[event_code]
+
+    monkeypatch.setattr(scraper, "_find_events", fake_find_events)
+    monkeypatch.setattr(scraper, "_fetch_showtimes", fake_fetch_showtimes)
+
+    # IMAX doesn't match the ScreenX sibling -> it should never be fetched.
+    await scraper.scrape(make_watch(date=date(2026, 8, 4)), wanted_formats={"IMAX"})
+    assert fetched_codes == ["ET_BASE"]
+
+    fetched_codes.clear()
+    # ScreenX does match -> the sibling should still be fetched.
+    await scraper.scrape(make_watch(date=date(2026, 8, 4)), wanted_formats={"ScreenX"})
+    assert fetched_codes == ["ET_BASE", "ET_SCREENX"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_paces_sibling_fetches(monkeypatch):
+    import app.scrapers.bookmyshow as bms_module
+
+    scraper = BookMyShowScraper()
+    sleep_calls = []
+
+    async def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    async def fake_find_events(session, movie, city_slug):
+        return [("spiderman-brand-new-day", "ET_BASE")]
+
+    async def fake_fetch_showtimes(session, event_code, region, show_date):
+        return {"ET_BASE": ANCHOR_PAYLOAD, "ET_SCREENX": SCREENX_PAYLOAD}[event_code]
+
+    monkeypatch.setattr(bms_module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(scraper, "_find_events", fake_find_events)
+    monkeypatch.setattr(scraper, "_fetch_showtimes", fake_fetch_showtimes)
+
+    await scraper.scrape(make_watch(date=date(2026, 8, 4)))
+
+    # one sibling (ET_SCREENX) fetched after the anchor -> no trailing sleep needed
+    assert sleep_calls == []
+
+
+@pytest.mark.asyncio
+async def test_scrape_paces_between_multiple_siblings(monkeypatch):
+    import app.scrapers.bookmyshow as bms_module
+
+    scraper = BookMyShowScraper()
+    sleep_calls = []
+
+    async def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    two_siblings_payload = {
+        "ShowDetails": [
+            {
+                "Date": "20260804",
+                "Event": {
+                    "ChildEvents": [
+                        {"EventTitle": "Spider-Man: Brand New Day", "EventCode": "ET_BASE", "EventLang": "English"},
+                        {
+                            "EventTitle": "Spider-Man: Brand New Day (3D SCREEN X)",
+                            "EventCode": "ET_SCREENX",
+                            "EventLang": "English",
+                        },
+                        {
+                            "EventTitle": "Spider-Man: Brand New Day (IMAX)",
+                            "EventCode": "ET_IMAX",
+                            "EventLang": "English",
+                        },
+                    ],
+                },
+                "Venues": [
+                    {"VenueName": "INOX Megaplex", "ShowTimes": [{"ShowTime": "7:00 PM", "EventCode": "ET_BASE"}]}
+                ],
+            }
+        ]
+    }
+
+    async def fake_find_events(session, movie, city_slug):
+        return [("spiderman-brand-new-day", "ET_BASE")]
+
+    async def fake_fetch_showtimes(session, event_code, region, show_date):
+        return two_siblings_payload if event_code == "ET_BASE" else SCREENX_PAYLOAD
+
+    monkeypatch.setattr(bms_module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(scraper, "_find_events", fake_find_events)
+    monkeypatch.setattr(scraper, "_fetch_showtimes", fake_fetch_showtimes)
+
+    await scraper.scrape(make_watch(date=date(2026, 8, 4)))
+
+    # 2 siblings (ET_SCREENX, ET_IMAX) -> 1 pacing delay between them, none trailing
+    assert len(sleep_calls) == 1
+    assert sleep_calls[0] == settings.bms_request_delay_seconds
+
+
+@pytest.mark.asyncio
 async def test_scrape_caps_sibling_events(monkeypatch):
     scraper = BookMyShowScraper()
     monkeypatch.setattr(settings, "bms_max_events_per_watch", 1)

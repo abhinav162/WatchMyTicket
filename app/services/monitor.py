@@ -53,6 +53,20 @@ def _scrape_key(watch: Watch) -> tuple[str, str, object]:
     return (compress(watch.movie), watch.city.strip().lower(), watch.date)
 
 
+def _union_formats(watches: list[Watch]) -> set[str] | None:
+    """None means 'every format matters' — at least one watch in the group
+    has no format filter, so a scraper must not skip any variant. Otherwise
+    the union of every format string requested across the group, since the
+    group's single shared scrape must satisfy all of them.
+    """
+    formats: set[str] = set()
+    for watch in watches:
+        if not watch.formats:
+            return None
+        formats.update(watch.formats)
+    return formats
+
+
 class MonitorService:
     def __init__(
         self,
@@ -72,11 +86,20 @@ class MonitorService:
         started = time.monotonic()
         async with self._session_factory() as session:
             watches = await watch_repo.list_active(session)
+
+        # Group watches sharing a scrape key upfront so the scraper can be
+        # told the union of formats that matter across the whole group
+        # *before* it decides which format/language variants to fetch.
+        groups: dict[tuple, list[Watch]] = {}
+        for watch in watches:
+            groups.setdefault(_scrape_key(watch), []).append(watch)
+
         sent_total = 0
         scrape_cache: dict[tuple, list[Show]] = {}
         for watch in watches:
             try:
-                sent_total += await self.check_watch(watch, scrape_cache)
+                group = groups[_scrape_key(watch)]
+                sent_total += await self.check_watch(watch, scrape_cache, group)
             except ScraperBlockedError as exc:
                 logger.warning(
                     "watch={} ({!r}): {} — retrying next tick", watch.id, watch.movie, exc
@@ -96,13 +119,20 @@ class MonitorService:
             self.last_tick_duration,
         )
 
-    async def check_watch(self, watch: Watch, scrape_cache: dict[tuple, list[Show]] | None = None) -> int:
+    async def check_watch(
+        self,
+        watch: Watch,
+        scrape_cache: dict[tuple, list[Show]] | None = None,
+        group: list[Watch] | None = None,
+    ) -> int:
         """Check one watch. Returns the number of new shows notified this tick.
 
         All shows newly discovered in this tick are sent as a single digest
         message via one notify() call, not one message per show. When called
         from run_once(), scrape_cache is shared across every watch in the
-        tick so watches sharing a (movie, city, date) reuse one scrape.
+        tick so watches sharing a (movie, city, date) reuse one scrape, and
+        group is every watch sharing that scrape (defaults to just this
+        watch when called directly, e.g. from tests).
         """
         cache = scrape_cache if scrape_cache is not None else {}
         key = _scrape_key(watch)
@@ -110,7 +140,8 @@ class MonitorService:
             shows = cache[key]
             logger.debug("watch={}: reusing cached scrape for {}", watch.id, key)
         else:
-            shows = await self._scraper.scrape(watch)
+            wanted_formats = _union_formats(group if group is not None else [watch])
+            shows = await self._scraper.scrape(watch, wanted_formats=wanted_formats)
             cache[key] = shows
         matching = filter_shows(watch, shows)
 

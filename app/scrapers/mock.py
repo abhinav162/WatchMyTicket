@@ -12,7 +12,7 @@ from app.scrapers.base import BaseScraper
 class MockScraper(BaseScraper):
     name = "mock"
 
-    async def scrape(self, watch: Watch) -> list[Show]:
+    async def scrape(self, watch: Watch, wanted_formats: set[str] | None = None) -> list[Show]:
         base = dict(movie=watch.movie, city=watch.city, date=watch.date)
         return [
             Show(

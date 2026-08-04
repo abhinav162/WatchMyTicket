@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     # Datacenter IPs (cloud VMs) get 403'd by BMS's bot-protection far more
     # than residential/ISP IPs; empty means no proxy (direct connection).
     bms_proxy_url: str = ""
+    # Pause between each sibling format/language event fetch within one
+    # scrape — firing ~15 requests back-to-back in under 2 seconds looks
+    # automated regardless of IP reputation. 0 disables pacing.
+    bms_request_delay_seconds: float = 0.5
 
     log_level: str = "INFO"
 

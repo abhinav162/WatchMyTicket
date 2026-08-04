@@ -6,7 +6,7 @@ from app.models import User, Watch, WatchStatus
 from app.repositories import watch_repo
 from app.schemas import Show
 from app.scrapers.base import BaseScraper, ScraperBlockedError
-from app.services.monitor import MonitorService, _scrape_key, filter_shows
+from app.services.monitor import MonitorService, _scrape_key, _union_formats, filter_shows
 
 
 def make_show(**overrides) -> Show:
@@ -30,9 +30,11 @@ class FakeScraper(BaseScraper):
     def __init__(self, shows):
         self.shows = shows
         self.calls = []
+        self.wanted_formats_seen = []
 
-    async def scrape(self, watch):
+    async def scrape(self, watch, wanted_formats=None):
         self.calls.append(watch.id)
+        self.wanted_formats_seen.append(wanted_formats)
         return list(self.shows)
 
 
@@ -169,7 +171,7 @@ async def test_blocked_scraper_does_not_crash_the_run(session_factory, seeded_wa
     class BlockedScraper(BaseScraper):
         name = "blocked"
 
-        async def scrape(self, watch):
+        async def scrape(self, watch, wanted_formats=None):
             raise ScraperBlockedError("403")
 
     notifier = SpyNotifier()
@@ -200,6 +202,22 @@ def test_scrape_key_differs_by_date():
     a = make_watch(date=date(2026, 8, 8))
     b = make_watch(date=date(2026, 8, 9))
     assert _scrape_key(a) != _scrape_key(b)
+
+
+def test_union_formats_combines_across_watches():
+    a = make_watch(formats=["ScreenX"])
+    b = make_watch(formats=["IMAX"])
+    assert _union_formats([a, b]) == {"ScreenX", "IMAX"}
+
+
+def test_union_formats_any_format_wins_if_any_watch_wants_everything():
+    a = make_watch(formats=["ScreenX"])
+    b = make_watch(formats=[])  # "any format"
+    assert _union_formats([a, b]) is None
+
+
+def test_union_formats_single_watch():
+    assert _union_formats([make_watch(formats=["ScreenX"])]) == {"ScreenX"}
 
 
 async def _seed_two_overlapping_watches(session_factory):
@@ -244,6 +262,8 @@ async def test_overlapping_watches_share_one_scrape_per_tick(session_factory):
     await monitor.run_once()
 
     assert len(scraper.calls) == 1  # one real scrape covered both watches
+    # the scraper was told the union of both watches' formats, not just one
+    assert scraper.wanted_formats_seen == [{"ScreenX", "IMAX"}]
     # each watch still only got notified about shows matching its own filter
     formats_notified = {s.format for _, s in notifier.sent}
     assert formats_notified == {"ScreenX", "IMAX"}

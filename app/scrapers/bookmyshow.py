@@ -25,6 +25,7 @@ anything else raises and the monitor retries on the next tick. Polling stays
 conservative (one request cycle per watch per minute).
 """
 
+import asyncio
 import difflib
 import re
 import secrets
@@ -69,6 +70,17 @@ REGION_CODES = {
 # Explore pages link movies as /movies/<slug>/ET... (no city segment); other
 # pages use /movies/<city>/<slug>/ET... — accept both.
 MOVIE_LINK_RE = re.compile(r"/movies/(?:[a-z0-9-]+/)?([a-z0-9-]+)/(ET\d+)")
+
+
+def _format_is_relevant(fmt: str | None, wanted_formats: set[str]) -> bool:
+    """Punctuation/spacing-tolerant containment check, mirroring the same
+    compress()-based matching monitor.filter_shows uses for the final
+    format filter — so a sibling event only gets fetched if some active
+    watch's format filter could plausibly match it."""
+    compressed_fmt = compress(fmt or "2D")
+    return any(
+        compress(w) in compressed_fmt or compressed_fmt in compress(w) for w in wanted_formats
+    )
 
 
 def proxy_with_session(base_url: str) -> str:
@@ -171,7 +183,7 @@ class BookMyShowScraper(BaseScraper):
         except CurlError as exc:
             raise ScraperBlockedError(f"Connection to BookMyShow failed for {url}: {exc}") from exc
 
-    async def scrape(self, watch: Watch) -> list[Show]:
+    async def scrape(self, watch: Watch, wanted_formats: set[str] | None = None) -> list[Show]:
         city_slug = slugify(watch.city)
         region = self._region_code(watch.city)
 
@@ -204,9 +216,23 @@ class BookMyShowScraper(BaseScraper):
             # Format/language variants (ScreenX, Dolby, 4DX, IMAX, dubs, ...) are
             # listed as ChildEvents of the anchor but have their own independent
             # showtimes, not embedded in the anchor's response — fetch each one.
-            sibling_codes = [
-                code for code in self._collect_child_codes(anchor_payload) if code != anchor_code
-            ]
+            code_meta = self._collect_child_codes(anchor_payload)
+            sibling_codes = [code for code in code_meta if code != anchor_code]
+
+            if wanted_formats is not None:
+                before = len(sibling_codes)
+                sibling_codes = [
+                    code for code in sibling_codes if _format_is_relevant(code_meta[code][0], wanted_formats)
+                ]
+                if before != len(sibling_codes):
+                    logger.debug(
+                        "BMS: {!r} — {} of {} variant(s) relevant to active filters {}",
+                        watch.movie,
+                        len(sibling_codes),
+                        before,
+                        sorted(wanted_formats),
+                    )
+
             max_extra = max(settings.bms_max_events_per_watch - 1, 0)
             if len(sibling_codes) > max_extra:
                 logger.info(
@@ -218,13 +244,15 @@ class BookMyShowScraper(BaseScraper):
                 )
                 sibling_codes = sibling_codes[:max_extra]
 
-            for code in sibling_codes:
+            for i, code in enumerate(sibling_codes):
                 try:
                     payload = await self._fetch_showtimes(session, code, region, watch.date)
                 except ScraperBlockedError as exc:
                     logger.debug("BMS: variant {} fetch failed, skipping: {}", code, exc)
                     continue
                 shows.extend(self._parse_showtimes(payload, watch, booking_url(anchor_slug, code)))
+                if settings.bms_request_delay_seconds and i < len(sibling_codes) - 1:
+                    await asyncio.sleep(settings.bms_request_delay_seconds)
         return shows
 
     async def _find_events(
