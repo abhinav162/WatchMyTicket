@@ -4,6 +4,7 @@ import pytest
 
 from app.config import settings
 from app.models import Watch
+from app.scrapers.base import ScraperBlockedError
 from app.scrapers.bookmyshow import BookMyShowScraper, match_events, proxy_with_session
 
 SAMPLE_PAYLOAD = {
@@ -209,6 +210,21 @@ def test_region_code_mapping():
     assert scraper._region_code("bangalore") == "BANG"
     assert scraper._region_code("New Delhi") == "NCR"
     assert scraper._region_code("Indore") == "INDORE"  # fallback
+
+
+@pytest.mark.asyncio
+async def test_get_converts_connection_failure_to_blocked_error():
+    # Regression: a dead residential-proxy exit node raised a raw CurlError
+    # (e.g. SSLError) that wasn't caught anywhere, aborting the whole scrape
+    # instead of being retried next tick like a plain 403 already is.
+    from curl_cffi.curl import CurlError
+
+    class FailingSession:
+        async def get(self, url, **kwargs):
+            raise CurlError("TLS connect error")
+
+    with pytest.raises(ScraperBlockedError):
+        await BookMyShowScraper._get(FailingSession(), "https://example.com")
 
 
 # Regression: a movie's own explore-page slug only surfaces the base and 3D

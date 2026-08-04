@@ -31,6 +31,7 @@ import secrets
 from datetime import date
 from urllib.parse import urlsplit, urlunsplit
 
+from curl_cffi.curl import CurlError
 from curl_cffi.requests import AsyncSession
 from loguru import logger
 
@@ -159,6 +160,17 @@ class BookMyShowScraper(BaseScraper):
             raise ScraperBlockedError(f"BookMyShow returned HTTP {response.status_code} for {url}")
         return response
 
+    @staticmethod
+    async def _get(session: AsyncSession, url: str, **kwargs):
+        """session.get() wrapped so a dead proxy exit node or dropped
+        connection is treated the same as a 403: log a one-line warning and
+        let the caller retry, instead of an unhandled traceback. Residential
+        proxy pools have some percentage of unreliable peers."""
+        try:
+            return await session.get(url, **kwargs)
+        except CurlError as exc:
+            raise ScraperBlockedError(f"Connection to BookMyShow failed for {url}: {exc}") from exc
+
     async def scrape(self, watch: Watch) -> list[Show]:
         city_slug = slugify(watch.city)
         region = self._region_code(watch.city)
@@ -220,7 +232,7 @@ class BookMyShowScraper(BaseScraper):
     ) -> list[tuple[str, str]]:
         """Scan the city's explore-movies page for the movie's (slug, event code) pairs."""
         url = f"{BASE_URL}/explore/movies-{city_slug}"
-        response = self._checked(await session.get(url), url)
+        response = self._checked(await self._get(session, url), url)
         return match_events(response.text, movie)
 
     async def _fetch_showtimes(
@@ -238,7 +250,7 @@ class BookMyShowScraper(BaseScraper):
             "token": "",
             "dateCode": show_date.strftime("%Y%m%d"),
         }
-        response = self._checked(await session.get(url, params=params), url)
+        response = self._checked(await self._get(session, url, params=params), url)
         try:
             return response.json()
         except ValueError as exc:
